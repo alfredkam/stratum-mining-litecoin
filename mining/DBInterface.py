@@ -14,6 +14,7 @@ class DBInterface():
         self.dbi = self.connectDB()
 
     def init_main(self):
+        self.dbi.check_tables()
  
         self.q = Queue.Queue()
         self.queueclock = None
@@ -149,6 +150,62 @@ class DBInterface():
                     self.q.put(v)
                 break  # Allows us to sleep a little
 
+    def archive_shares(self, dbi):
+        log.debug("DBInterface.archive_shares called")
+        found_time = dbi.archive_check()
+        
+        if found_time == 0:
+            return False
+        
+        log.info("Archiving shares newer than timestamp %f " % found_time)
+        dbi.archive_found(found_time)
+        
+        if settings.ARCHIVE_MODE == 'db':
+            dbi.archive_to_db(found_time)
+            dbi.archive_cleanup(found_time)
+        elif settings.ARCHIVE_MODE == 'file':
+            shares = dbi.archive_get_shares(found_time)
+
+            filename = settings.ARCHIVE_FILE
+            
+            if settings.ARCHIVE_FILE_APPEND_TIME :
+                filename = filename + "-" + datetime.fromtimestamp(found_time).strftime("%Y-%m-%d-%H-%M-%S")
+                
+            filename = filename + ".csv"
+
+            if settings.ARCHIVE_FILE_COMPRESS == 'gzip':
+                import gzip
+                filename = filename + ".gz"
+                filehandle = gzip.open(filename, 'a')        
+            elif settings.ARCHIVE_FILE_COMPRESS == 'bzip2' and settings.ARCHIVE_FILE_APPEND_TIME :
+                import bz2
+                filename = filename + ".bz2"
+                filehandle = bz2.BZFile(filename, mode='wb', buffering=4096)
+            else:
+                filehandle = open(filename, "a")
+
+            while True:        
+                row = shares.fetchone()
+                if row == None:
+                    break
+                str1 = '","'.join([str(x) for x in row])
+                filehandle.write('"%s"\n' % str1)
+                
+            filehandle.close()
+
+            clean = False
+            
+            while not clean:
+                try:
+                    dbi.archive_cleanup(found_time)
+                    clean = True
+                except Exception as e:
+                    clean = False
+                    log.error("Archive Cleanup Failed... will retry to cleanup in 30 seconds")
+                    sleep(30)
+                
+        return True
+
     def queue_share(self, data):
         self.q.put(data)
 
@@ -179,8 +236,32 @@ class DBInterface():
         
         return False
     
+    def list_users(self):
+        return self.dbi.list_users()
+    
+    def get_user(self, id):
+        return self.dbi.get_user(id)
+
+    def insert_user(self, username, password):        
+        return self.dbi.insert_user(username, password)
+
+    def delete_user(self, username):
+        self.usercache = {}
+        return self.dbi.delete_user(username)
+        
+    def update_user(self, username, password):
+        self.usercache = {}
+        return self.dbi.update_user(username, password)
+
     def update_worker_diff(self, username, diff):
         return self.dbi.update_worker_diff(username, diff)
 
+    def get_pool_stats(self):
+        return self.dbi.get_pool_stats()
+    
+    def get_workers_stats(self):
+        return self.dbi.get_workers_stats()
+
     def clear_worker_diff(self):
         return self.dbi.clear_worker_diff()
+
